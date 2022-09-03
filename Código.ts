@@ -1,7 +1,12 @@
-var CONST_LETTER_FOLDER_ID = "1GjPisC6GY_cHDoBpGRJXkX3gt7Ukedvt";
-var CONST_MUSICS_FOLDER_ID = "1xRCnyVrpvnbzEaLeiW_DNSv4QIhTXyjw";
-var CONST_MODEL_ID = "1_b0Ub9PbIqNk9P34Y1gzOxr39Au_LAkgpCNUmnjcqpo";
-var VAGALUME_API_KEY = "";
+var CONST_LETTER_FOLDER_DOC_ID = "1gjpisc6gy_chdobpgrjxkx3gt7ukedvt";
+var CONST_LETTER_FOLDER_PDF_ID = "198lRqvb2ZZl7X6p_rLSqzqDgEr1T0cOS";
+var CONST_MUSICS_FOLDER_ID = "1xrcnyvrpvnbzealeiw_dnsv4qihtxyjw";
+var CONST_MODEL_ID_DOC_PDF = "1_b0Ub9PbIqNk9P34Y1gzOxr39Au_LAkgpCNUmnjcqpo";
+var CONST_MODEL_ID_REVIEW_DOC = "19NWovX0yHBA0zWrAd6S1tYRlDN6Aiv_OnOE7UrZ8blY";
+var CONST_FOLDER_LETTERS = "18lhEbOvYgtZSNQHZBWcv3ih06iGyaaOb";
+const maxLine = 30;
+
+const VAGALUME_API_KEY = "384fe401b98e39a9f44ebfc6479df5d7";
 var vars = ["title", "artist"];
 var relatedArtists = new Set<string>();
 /* var relatedArtists = [
@@ -73,8 +78,8 @@ var count = 0;
 
 interface Music {
   title: string;
-  artist: string;
-  letter: string;
+  artist?: string;
+  letter?: string;
   idDocument?: string;
   idPdf?: string;
   status?:
@@ -92,12 +97,13 @@ interface Music {
   id?: string;
   based?: string;
   logger?: string;
+  letterLinesCount?: number;
 }
 
 function testCreationMusic() {
   var music = {
-    title: "NINGUÉM SE IMPORTA COM MINHA ALMA",
-    artist: "JOSUÉ LIRA",
+    title: "JUÍZO FINAL",
+    artist: "VICTORINO SILVA",
     letter: "",
   } as Music;
   createMusic(music);
@@ -111,14 +117,125 @@ function checkRelatedArtists(values) {
     });
 }
 
-function executeLetterScriptFromSpreadsheet() {
+function executeReviewAndGenerate(musics: Music[]) {
+  // 3 - get body of docs
+  musics = musics.filter((el) => el != null || el != undefined);
+  var bodies = musics.map((el) => {
+    var doc = DocumentApp.openById(el.idDocument);
+    return doc.getBody();
+  });
+
+  // 4 - join body of docs in one
+  var newDocId = DriveApp.getFileById(CONST_MODEL_ID_REVIEW_DOC)
+    .makeCopy(`${musics.map((el) => el.title).join("/")}`)
+    .getId();
+
+  // Open the temporary document
+  var copyDoc = DocumentApp.openById(newDocId);
+  var copyBody = (copyDoc as any).getActiveSection();
+  // map the body of the docs
+  const lettersOnly = bodies.map((el) => {
+    var arr = el.getText().split("\n");
+    //remove line with 'música baseada na versão'
+    arr = arr.filter((el) => !el.includes("música baseada na versão"));
+    // get slice from the 3rd line (letter)
+    return arr.slice(3).join("\n").trim();
+  });
+
+  for (var i = 0; i < musics.length; i++) {
+    copyBody.replaceText(`{{title${i + 1}}}`, musics[i].title);
+    copyBody.replaceText(`{{artist${i + 1}}}`, musics[i].artist);
+    //if letterLinesCount is less than maxLine concat with difference of maxLine
+    var letter =
+      musics[i].letterLinesCount < maxLine
+        ? lettersOnly[i].concat(
+            Array(maxLine - musics[i].letterLinesCount).join("\n")
+          )
+        : lettersOnly[i];
+
+    copyBody.replaceText(
+      `{{letter${i + 1}}}`,
+      i === 0 ? letter : letter.trim()
+    );
+  }
+
+  if (musics.length === 1) {
+    copyBody.replaceText(`{{title2}}`, "");
+    copyBody.replaceText(`{{artist2}}`, "");
+    copyBody.replaceText(`{{letter2}}`, "");
+  }
+
+  // get folder by id
+  var saveFolder = DriveApp.getFolderById(`${CONST_FOLDER_LETTERS}`);
+  saveFolder.addFile(DriveApp.getFileById(newDocId));
+  copyDoc.saveAndClose();
+
+  return newDocId;
+}
+
+function reviewAndGenerate() {
+  // 1 - select from spreadsheet the music list who have checked(A)
+  var musics = getRowsFromSpreadsheetWhoHaveChecked("I").map((el) => {
+    // 2 - get the ID Doc (G)
+    return {
+      title: el[2],
+      artist: el[3],
+      idDocument: el[6],
+      letterLinesCount: el[8],
+    } as Music;
+  });
+
+  const urlsFromMusics = [];
+
+  // sort desc by letterLinesCount
+  musics = musics.sort((a, b) => {
+    return b.letterLinesCount - a.letterLinesCount;
+  });
+
+  // if letterLinesCount is less than maxLine, then the music comes first
+  musics = musics
+    .filter((el) => el.letterLinesCount <= maxLine)
+    .concat(musics.filter((el) => el.letterLinesCount > maxLine));
+
+  // execute review and generate two musics by 2 musics
+  for (let i = 0; i < musics.length; i += 2) {
+    const newDocId = executeReviewAndGenerate([musics[i], musics[i + 1]]);
+    urlsFromMusics.push({
+      titles:
+        musics.length > 1
+          ? [musics[i].title, musics[i + 1].title].join("/")
+          : musics[i].title,
+      url: `https://docs.google.com/document/d/${newDocId}/edit`,
+    });
+  }
+
+  showURLReview(urlsFromMusics);
+}
+
+function showURLReview(urlsFromMusics) {
+  var html = `
+    <html>
+      <body>
+      ${urlsFromMusics
+        .map((el) => `<a href="${el.url}" target="blank">${el.titles}</a>`)
+        .join("<br>")}
+      </body>
+    </html>
+    `;
+  var ui = HtmlService.createHtmlOutput(html);
+  ui.setWidth(500);
+  ui.setHeight(urlsFromMusics.length * 30);
+  SpreadsheetApp.getUi().showModelessDialog(ui, "Letras geradas com sucesso!");
+}
+
+function getRowsFromSpreadsheetWhoHaveChecked(rangeEnd) {
   var spreadsheet = SpreadsheetApp.getActive();
   spreadsheet.setActiveSheet(spreadsheet.getSheetByName("MUSIC"), true);
 
   const initialRangeIndex = 2;
 
   // get all range of music
-  var range = spreadsheet.getRange(`A${initialRangeIndex}:E`);
+  var range = spreadsheet.getRange(`A${initialRangeIndex}:${rangeEnd}`);
   var values = range.getValues();
 
   checkRelatedArtists(values);
@@ -127,7 +244,11 @@ function executeLetterScriptFromSpreadsheet() {
   var rows = values.filter((value) => value[0] === true && value[2] !== "");
   total = rows.length;
   // iterate rows and transform into music object
-  var musics = rows.map(
+  return rows;
+}
+
+function executeLetterScriptFromSpreadsheet() {
+  var musics = getRowsFromSpreadsheetWhoHaveChecked("E").map(
     (value) =>
       ({
         title: value[2],
@@ -136,8 +257,6 @@ function executeLetterScriptFromSpreadsheet() {
         referenceArtistsLetter: value[4],
       } as Music)
   );
-
-  // log the first music
   musics.forEach((music) => createMusic(music));
 }
 
@@ -155,7 +274,7 @@ function updateSpreadsheetWithStatusAndId(music: Music) {
   const sheet = spreadsheet.getSheetByName("MUSIC");
 
   // find cell by value
-  const range = sheet.getRange(`A2:G`);
+  const range = sheet.getRange(`A2:I`);
   const data = range.getValues();
 
   var indexRow = 0;
@@ -171,6 +290,8 @@ function updateSpreadsheetWithStatusAndId(music: Music) {
   sheet.getRange(`A${indexRow}`).setValue(false);
   sheet.getRange(`F${indexRow}`).setValue(music.status);
   sheet.getRange(`G${indexRow}`).setValue(music.idDocument);
+  sheet.getRange(`H${indexRow}`).setValue(music.idPdf);
+  sheet.getRange(`I${indexRow}`).setValue(music.letter.split("\n").length);
 }
 
 function updateSpreadsheetWithAllMusicsFromFolder() {
@@ -191,7 +312,7 @@ function updateSpreadsheetWithAllMusicsFromFolder() {
       .replace(/^HC \d{3} - /g, "[remove]")
       .replace(/^HC \d{2} - /g, "[remove]")
       .replace(/^HC \d{1} - /g, "[remove]")
-      .replace('POUT PORRI - ', '[remove]')
+      .replace("POUT PORRI - ", "[remove]")
       .toUpperCase();
     setMusicsNames.add(withoutParenthesis);
   }
@@ -224,74 +345,85 @@ function updateSpreadsheetWithAllMusicsFromFolder() {
 }
 
 function createMusic(music: Music) {
-  // get the letter of music
-  getLettersByArtistAndTitle(music)
-    .then((musicResp: Music) => {
-      music = musicResp;
-    })
-    .catch((error) => {
-      music = getLettersByTitle(music);
-    })
-    .finally(() => {
-      count++;
+  try {
+    // get the letter of music
+    getLettersByArtistAndTitle(music)
+      .then((musicResp: Music) => {
+        music = musicResp;
+      })
+      .catch((error) => {
+        music = getLettersByTitle(music);
+      })
+      .finally(() => {
+        count++;
 
-      var docName = "";
+        var docName = "";
 
-      switch (music.status) {
-        case "referenced":
-          docName = `[referenced] ${
-            music.title
-          } - ${music.referenceArtistsLetter.toUpperCase()}`;
-          break;
-        case "not_trusted":
-          docName = `[based] ${music.title} - ${music.artist}`;
-          break;
-        default:
-          docName = `${music.referenceArtistsLetter ? '[referenced]' : ''} ${music.title} - ${music.artist}`;
-          break;
-      }
-    
+        switch (music.status) {
+          case "referenced":
+            docName = `[referenced] ${
+              music.title
+            } - ${music.referenceArtistsLetter.toUpperCase()}`;
+            break;
+          case "not_trusted":
+            docName = `[based] ${music.title} - ${music.artist}`;
+            break;
+          default:
+            docName = `${music.referenceArtistsLetter ? "[referenced]" : ""} ${
+              music.title
+            } - ${music.artist}`;
+            break;
+        }
 
-      var copyId = DriveApp.getFileById(CONST_MODEL_ID)
-        .makeCopy(`${docName}`)
-        .getId();
+        var copyId = DriveApp.getFileById(CONST_MODEL_ID_DOC_PDF)
+          .makeCopy(`${docName}`)
+          .getId();
 
-      // Open the temporary document
-      var copyDoc = DocumentApp.openById(copyId);
-      // Get the document’s body section
-      var copyBody = (copyDoc as any).getActiveSection();
+        // Open the temporary document
+        var copyDoc = DocumentApp.openById(copyId);
+        // Get the document’s body section
+        var copyBody = (copyDoc as any).getActiveSection();
 
-      copyBody.replaceText(
-        "{{based}}",
-        music.based ? `música baseada na versão ${music.based}` : ""
-      );
-      // copyBody.replaceText("{{logger}}", "");
-      copyBody.replaceText("{{title}}", music.title);
-      copyBody.replaceText("{{artist}}", music.artist);
-      copyBody.replaceText("{{letter}}", music.letter);
+        copyBody.replaceText(
+          "{{based}}",
+          music.based ? `música baseada na versão ${music.based}` : ""
+        );
+        // copyBody.replaceText("{{logger}}", "");
+        copyBody.replaceText("{{title}}", music.title);
+        copyBody.replaceText("{{artist}}", music.artist);
+        copyBody.replaceText("{{letter}}", music.letter);
 
-      var saveFolder = DriveApp.getFolderById(CONST_LETTER_FOLDER_ID);
-      saveFolder.addFile(DriveApp.getFileById(copyId));
-      copyDoc.saveAndClose();
-      music.idDocument = copyId;
-      updateSpreadsheetWithStatusAndId(music);
-      // toPdf(saveFolder.getId(), copyId);
+        // get folder by id
+        var saveFolder = DriveApp.getFolderById(
+          "1GjPisC6GY_cHDoBpGRJXkX3gt7Ukedvt"
+        );
+        Logger.log(saveFolder.getName());
+        saveFolder.addFile(DriveApp.getFileById(copyId));
+        copyDoc.saveAndClose();
+        music.idDocument = copyId;
+        const pdf = toPdf(CONST_LETTER_FOLDER_PDF_ID, copyId);
+        music.idPdf = pdf.pdfId;
+        updateSpreadsheetWithStatusAndId(music);
 
-      if (count === total) {
-        openFolder(saveFolder.getId());
-      }
-    });
+        if (count === total) {
+          showURL(saveFolder.getId(), pdf.pdfFolderId);
+        }
+      });
+  } catch (error) {
+    Logger.log(error);
+  }
 }
 
-function openFolder(id) {
-  showURL("https://drive.google.com/drive/u/0/folders/".concat(id));
-}
-
-function showURL(href) {
-  var html = '\n  <html>\n    <body>\n      <a href="'.concat(
-    href,
-    '" target="blank" onclick="google.script.host.close()">Abrir pasta das letras</a>\n      </body>\n      </html>\n      '
-  );
+function showURL(hrefDOC, hrefPDF) {
+  var html = `
+    <html>
+      <body>
+        <a href="https://drive.google.com/drive/u/0/folders/${hrefDOC}" target="blank" onclick="google.script.host.close()">[DOC] Abrir pasta das letras</a>
+        <br>
+        <a href="https://drive.google.com/drive/u/0/folders/${hrefPDF}" target="blank" onclick="google.script.host.close()">[PDF] Abrir pasta das letras</a>
+      </body>
+    </html>
+    `;
   var ui = HtmlService.createHtmlOutput(html);
   ui.setWidth(300);
   ui.setHeight(100);
@@ -318,6 +450,8 @@ var toPdf = function (folderID, docId) {
     var parent = parents.next();
     parent.removeFile(pdfFile);
   }
+
+  return { pdfId: pdfVersionID, pdfFolderId: folderID };
   // delete the original Google doc file
   // docFile.setTrashed(true);
 };
@@ -330,8 +464,9 @@ function addMenus() {
   var ui = SpreadsheetApp.getUi();
   // Or DocumentApp or FormApp.
   var menu = ui.createMenu("Músicas");
+  menu.addItem("Revisar e preparar para imprimir", "reviewAndGenerate");
   menu.addItem("Gerar Letras", "executeLetterScriptFromSpreadsheet");
-  menu.addItem("Atualizar Músicas", "updateSpreadsheetWithAllMusicsFromFolder");
+  // menu.addItem("Atualizar Músicas", "updateSpreadsheetWithAllMusicsFromFolder");
   menu.addToUi();
 }
 
@@ -350,7 +485,7 @@ function getLettersByArtistAndTitle(music: Music) {
         "https://api.vagalume.com.br/search.php?" + generateQueryString(data)
       );
       const returnObj = JSON.parse(response.getContentText("UTF-8"));
-      music.letter = returnObj.mus[0].text;
+      music.letter = returnObj.mus[0].text.replace("\n\n", "\n");
       music.status = "trusted";
 
       if (music.referenceArtistsLetter) {
@@ -388,14 +523,18 @@ function removeAccent(text: string) {
 
 function getLettersByTitle(music: Music) {
   //remove accents
+  const artistSearch = music.referenceArtistsLetter
+    ? music.referenceArtistsLetter
+    : music.artist;
   const titleAndArtistWithoutAccents = removeAccent(
-    music.title + " - " + music.referenceArtistsLetter
-      ? music.referenceArtistsLetter
-      : music.artist
+    music.title +
+      " - " +
+      (music.referenceArtistsLetter
+        ? music.referenceArtistsLetter
+        : music.artist)
   );
 
   Logger.log(titleAndArtistWithoutAccents);
-  music.logger = music.logger + "\n" + titleAndArtistWithoutAccents;
 
   var data = {
     q: titleAndArtistWithoutAccents,
@@ -415,7 +554,11 @@ function getLettersByTitle(music: Music) {
   const referencDocBand = returnObj.response.docs.find((doc) => {
     return (
       removeAccent(doc.band.toLowerCase()) ===
-      removeAccent(music.referenceArtistsLetter)
+      removeAccent(
+        music.referenceArtistsLetter
+          ? music.referenceArtistsLetter
+          : music.artist
+      )
     );
   });
 
@@ -492,18 +635,12 @@ function getLettersByTitle(music: Music) {
         );
       });
 
-      music.logger =
-        music.logger +
-        "\n" +
-        "Most related- " +
-        JSON.stringify(mostRelatedTitle);
       music.based = `${mostRelatedTitle.mus} - ${mostRelatedTitle.artist}`;
 
       idLetter = returnObj.response.docs.find(
         (docs) =>
           removeAccent(docs.band.toUpperCase()) === mostRelatedTitle.artist
       ).id;
-      music.logger = music.logger + "\n" + "idLetter- " + idLetter;
     } else {
       const sameTitle = returnObj.response.docs.filter(
         (doc) =>
@@ -566,7 +703,7 @@ function getLettersByTitle(music: Music) {
   );
 
   const returnObj2 = JSON.parse(response.getContentText("UTF-8"));
-  music.letter = returnObj2.mus[0].text;
+  music.letter = returnObj2.mus[0].text.replace("\n\n", "\n");
   return music;
 }
 
